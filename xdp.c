@@ -94,17 +94,27 @@ int pinger(struct xdp_md* ctx) {
     recalc_icmp_csum(icmphdr, 8, icmphdr->type);
 
     __u64* ts_secs = (void*)(icmphdr + 1);
-    __u64* ts_nsecs = (void*)(icmphdr + 1) + sizeof(__u64);
-
-    if ((void*)ts_nsecs + sizeof(__u64) <= data_end) {
+    __u8* payload = (void*)(icmphdr + 1);
+    int is_bsd = 0;
+    if ((void*)(payload + 16) <= data_end) {
+        // Check for BSD ping signature: 0x08, 0x09, 0x0a, 0x0b, ...
+        if (payload[8] == 0x08 && payload[9] == 0x09 && payload[10] == 0x0a && payload[11] == 0x0b &&
+            payload[12] == 0x0c && payload[13] == 0x0d && payload[14] == 0x0e && payload[15] == 0x0f) {
+            is_bsd = 1;
+        }
+    }
+    if ((void*)(ts_secs + 1) <= data_end) {
         __u64 old_secs = *ts_secs;
-        __u64 old_nsecs = *ts_nsecs;
-
         *ts_secs -= bpf_get_prandom_u32() % 500;
-        *ts_nsecs -= bpf_get_prandom_u32();
-
         recalc_icmp_csum(icmphdr, old_secs, *ts_secs);
-        recalc_icmp_csum(icmphdr, old_nsecs, *ts_nsecs);
+    }
+    if (!is_bsd) {
+        __u64* ts_nsecs = (void*)(icmphdr + 1) + sizeof(__u64);
+        if ((void*)ts_nsecs + sizeof(__u64) <= data_end) {
+            __u64 old_nsecs = *ts_nsecs;
+            *ts_nsecs -= bpf_get_prandom_u32();
+            recalc_icmp_csum(icmphdr, old_nsecs, *ts_nsecs);
+        }
     }
 
     __u8 old_ttl = iph->ttl;
