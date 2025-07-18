@@ -95,20 +95,48 @@ int pinger(struct xdp_md* ctx) {
 
     __u64* ts_secs = (void*)(icmphdr + 1);
     __u8* payload = (void*)(icmphdr + 1);
-    int is_bsd = 0;
+    int ping_type = 0; // 0=linux, 1=bsd, 2=busybox
+    
+    // Check payload size and signature to determine ping type
     if ((void*)(payload + 16) <= data_end) {
         // Check for BSD ping signature: 0x08, 0x09, 0x0a, 0x0b, ...
         if (payload[8] == 0x08 && payload[9] == 0x09 && payload[10] == 0x0a && payload[11] == 0x0b &&
             payload[12] == 0x0c && payload[13] == 0x0d && payload[14] == 0x0e && payload[15] == 0x0f) {
-            is_bsd = 1;
+            ping_type = 1; // BSD ping
         }
     }
-    if ((void*)(ts_secs + 1) <= data_end) {
-        __u64 old_secs = *ts_secs;
-        *ts_secs -= bpf_get_prandom_u32() % 500;
-        recalc_icmp_csum(icmphdr, old_secs, *ts_secs);
+    
+    // Check for BusyBox ping (smaller payload, no specific signature)
+    if (ping_type == 0 && (void*)(payload + 8) <= data_end) {
+        // If payload is small and doesn't have BSD signature, likely BusyBox
+        if ((void*)(payload + 16) > data_end || 
+            (payload[8] != 0x08 && payload[9] != 0x09 && payload[10] != 0x0a && payload[11] != 0x0b)) {
+            ping_type = 2; // BusyBox ping
+        }
     }
-    if (!is_bsd) {
+    
+    if (ping_type == 2) {
+        // BusyBox: mutate only first 4 bytes (uint32_t timestamp)
+        __u32* ts_busybox = (void*)(icmphdr + 1);
+        if ((void*)(ts_busybox + 1) <= data_end) {
+            __u32 old_ts = *ts_busybox;
+            *ts_busybox -= bpf_get_prandom_u32() % 500;
+            recalc_icmp_csum(icmphdr, old_ts, *ts_busybox);
+        }
+    } else if (ping_type == 1) {
+        // BSD: mutate only first 8 bytes (timestamp)
+        if ((void*)(ts_secs + 1) <= data_end) {
+            __u64 old_secs = *ts_secs;
+            *ts_secs -= bpf_get_prandom_u32() % 500;
+            recalc_icmp_csum(icmphdr, old_secs, *ts_secs);
+        }
+    } else {
+        // Linux: mutate both 8-byte timestamps
+        if ((void*)(ts_secs + 1) <= data_end) {
+            __u64 old_secs = *ts_secs;
+            *ts_secs -= bpf_get_prandom_u32() % 500;
+            recalc_icmp_csum(icmphdr, old_secs, *ts_secs);
+        }
         __u64* ts_nsecs = (void*)(icmphdr + 1) + sizeof(__u64);
         if ((void*)ts_nsecs + sizeof(__u64) <= data_end) {
             __u64 old_nsecs = *ts_nsecs;
